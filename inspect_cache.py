@@ -67,3 +67,46 @@ for layer_idx in range(len(cache)):
     print(f"\nLayer {layer_idx}")
     print("  Key shape:  ", key.shape)
     print("  Value shape:", value.shape)
+
+
+# Inspect the cache after adding one more token to the sequence
+next_token_id = torch.tensor([[100]])
+
+with torch.no_grad():
+    outputs2 = model(
+        input_ids=next_token_id,
+        past_key_values=cache,
+        use_cache=True,
+        return_dict=True,
+    )
+
+cache2 = outputs2.past_key_values
+
+key, value = cache2.layers[0].keys, cache2.layers[0].values
+
+print("\nAfter adding one token:")
+print("Key shape:", key.shape)
+print("Value shape:", value.shape)
+
+# Compare the cache before and after adding one token
+all_preserved = True
+for old_layer, new_layer in zip(cache.layers, cache2.layers):
+    old_key = old_layer.keys
+    old_value = old_layer.values
+
+    new_key = new_layer.keys
+    new_value = new_layer.values
+
+    keys_same = torch.allclose(
+        old_key,
+        new_key[:, :, :old_key.shape[2], :]
+    )
+
+    values_same = torch.allclose(
+        old_value,
+        new_value[:, :, :old_value.shape[2], :]
+    )
+
+    all_preserved = all_preserved and keys_same and values_same
+
+print("Previous cache preserved:", all_preserved)

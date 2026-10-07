@@ -60,3 +60,31 @@ print(cache_A.layers[0].keys[0, 0, 0, :])
 
 print("\nModel B first KV head, first token:")
 print(cache_B.layers[0].keys[0, 0, 0, :])
+
+# Number of layers
+num_layers_A = len(cache_A.layers)
+num_layers_B = len(cache_B.layers)
+
+# Proportional layer mapping
+layer_map = []
+
+for b_layer in range(num_layers_B):
+    """ we want the beginning and end to correspond so we just measure the distance between indices: intervals so num_layers_A - 1"""
+
+    a_layer = round(
+        (b_layer * (num_layers_A - 1)) / (num_layers_B - 1)
+    )
+    layer_map.append(a_layer)
+
+print("Layer mapping:")
+
+mapped_K_A = []
+mapped_V_A = []
+
+for b_layer, a_layer in enumerate(layer_map):
+    print(f"B layer {b_layer} <- A layer {a_layer}")
+    mapped_K_A.append(cache_A.layers[a_layer].keys)
+    mapped_V_A.append(cache_A.layers[a_layer].values)
+
+for b_layer in range(num_layers_B):
+    print("K shape:", mapped_K_A[b_layer].shape)

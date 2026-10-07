@@ -3,7 +3,9 @@ import torch.nn as nn
 from inspect_different_models import models_and_caches
 
 config_A, config_B, cache_A, cache_B = models_and_caches()
-head_dim = config_A.hidden_size // config_A.num_attention_heads
+
+head_dim_A = config_A.hidden_size // config_A.num_attention_heads
+head_dim_B = config_B.hidden_size // config_B.num_attention_heads
 
 # Head adaptation
 # Head adapters
@@ -12,12 +14,12 @@ head_dim = config_A.hidden_size // config_A.num_attention_heads
     hint: Linear only transforms the last dimension."""
 
 K_adapter = nn.Linear(
-    config_A.num_key_value_heads * head_dim,
-    config_B.num_key_value_heads * head_dim
+    config_A.num_key_value_heads * head_dim_A,
+    config_B.num_key_value_heads * head_dim_B
 )
 V_adapter = nn.Linear(
-    config_A.num_key_value_heads * head_dim,
-    config_B.num_key_value_heads * head_dim
+    config_A.num_key_value_heads * head_dim_A,
+    config_B.num_key_value_heads * head_dim_B
 )
 
 def adapt_heads(cache_tensor, adapter):
@@ -37,12 +39,12 @@ def adapt_heads(cache_tensor, adapter):
     # [B, S, H_B * D_A]
     x = adapter(x)
 
-    # [B, S, H_B, D]
+    # [B, S, H_B, D_B]
     x = x.reshape(
         B,
         S,
         config_B.num_key_value_heads,
-        D
+        config_B.hidden_size // config_B.num_attention_heads
     )
 
     # [B, H_B, S, D_B]

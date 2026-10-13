@@ -98,4 +98,29 @@ for b_layer in range(num_layers_B):
         f"V {adapted_V[b_layer].shape}"
     )
 
+# Use B's actual cache as the target
+loss_fn = nn.MSELoss()
+
+total_K_loss = 0
+total_V_loss = 0
+
+for b_layer in range(num_layers_B):
+
+    target_K = cache_B.layers[b_layer].keys
+    target_V = cache_B.layers[b_layer].values
+
+    predicted_K = adapted_K[b_layer]
+    predicted_V = adapted_V[b_layer]
+
+    K_loss = loss_fn(predicted_K, target_K)
+    V_loss = loss_fn(predicted_V, target_V)
+
+    total_K_loss += K_loss
+    total_V_loss += V_loss
+
+total_loss = total_K_loss + total_V_loss
+
+print("K loss:", total_K_loss.item())
+print("V loss:", total_V_loss.item())
+print("Total loss:", total_loss.item())
 

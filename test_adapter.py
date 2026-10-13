@@ -98,29 +98,51 @@ for b_layer in range(num_layers_B):
         f"V {adapted_V[b_layer].shape}"
     )
 
+# Calculate MSE loss for the adapted keys and values
 # Use B's actual cache as the target
+
+""" Adam updates the Linear layers' weights and biases
+to reduce the difference between predicted and actual B caches"""
+
+optimizer = torch.optim.Adam(
+    list(K_adapter.parameters()) + list(V_adapter.parameters()),
+    lr=0.001
+)
+
 loss_fn = nn.MSELoss()
 
-total_K_loss = 0
-total_V_loss = 0
+# Number of training iterations
+for epoch in range(100):
 
-for b_layer in range(num_layers_B):
+    # clear the previous batch's gradients at the start of each epoch
+    optimizer.zero_grad()
 
-    target_K = cache_B.layers[b_layer].keys
-    target_V = cache_B.layers[b_layer].values
+    total_K_loss = 0
+    total_V_loss = 0
 
-    predicted_K = adapted_K[b_layer]
-    predicted_V = adapted_V[b_layer]
+    for b_layer, a_layer in enumerate(layer_map):
 
-    K_loss = loss_fn(predicted_K, target_K)
-    V_loss = loss_fn(predicted_V, target_V)
+        K_A = cache_A.layers[a_layer].keys
+        V_A = cache_A.layers[a_layer].values
 
-    total_K_loss += K_loss
-    total_V_loss += V_loss
+        predicted_K = adapt_heads(K_A, K_adapter)
+        predicted_V = adapt_heads(V_A, V_adapter)
 
-total_loss = total_K_loss + total_V_loss
+        target_K = cache_B.layers[b_layer].keys
+        target_V = cache_B.layers[b_layer].values
 
-print("K loss:", total_K_loss.item())
-print("V loss:", total_V_loss.item())
-print("Total loss:", total_loss.item())
+        total_K_loss += loss_fn(predicted_K, target_K)
+        total_V_loss += loss_fn(predicted_V, target_V)
 
+    total_loss = total_K_loss + total_V_loss
+
+    """ Calculate gradients for the adapter's parameters (PyTorch saves the gradients automatically inside each parameter.)
+    and update the parameters using those gradients."""
+    total_loss.backward()
+    optimizer.step()
+
+    if (epoch + 1) % 10 == 0:
+        print(
+            f"Epoch {epoch + 1}: "
+            f"Loss = {total_loss.item():.4f}"
+        )

@@ -25,7 +25,16 @@ def models_and_caches():
     model_A.eval()
     model_B.eval()
 
-    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    input_ids = torch.tensor([
+    [1, 2, 3, 4, 5],
+    [6, 7, 8, 9, 10],
+    [11, 12, 13, 14, 15],
+    [16, 17, 18, 19, 20],
+    [21, 22, 23, 24, 25],
+    [26, 27, 28, 29, 30],
+    [31, 32, 33, 34, 35],
+    [36, 37, 38, 39, 40],
+])
 
     with torch.no_grad():
         output_A = model_A(
@@ -43,27 +52,28 @@ def models_and_caches():
     cache_A = output_A.past_key_values
     cache_B = output_B.past_key_values
 
-    return config_A, config_B, cache_A, cache_B
+    return config_A, config_B, model_A, model_B, cache_A, cache_B
 
-config_A, config_B, cache_A, cache_B = models_and_caches()
+if __name__ == "__main__":
+    config_A, config_B, model_A, model_B, cache_A, cache_B = models_and_caches()
 
-print("Model A")
-print("Number of layers:", len(cache_A.layers))
-print("Layer 0 K:", cache_A.layers[0].keys.shape)
-print("Layer 0 V:", cache_A.layers[0].values.shape)
+    print("Model A")
+    print("Number of layers:", len(cache_A.layers))
+    print("Layer 0 K:", cache_A.layers[0].keys.shape)
+    print("Layer 0 V:", cache_A.layers[0].values.shape)
 
-print("\nModel B")
-print("Number of layers:", len(cache_B.layers))
-print("Layer 0 K:", cache_B.layers[0].keys.shape)
-print("Layer 0 V:", cache_B.layers[0].values.shape)
+    print("\nModel B")
+    print("Number of layers:", len(cache_B.layers))
+    print("Layer 0 K:", cache_B.layers[0].keys.shape)
+    print("Layer 0 V:", cache_B.layers[0].values.shape)
 
-""" These are two independently initialized models,
-so of course their learned representations will differ. This is exactly
-the reason that we should transform representations not merely change the shape! """
+    """ These are two independently initialized models,
+    so of course their learned representations will differ. This is exactly
+    the reason that we should transform representations not merely change the shape! """
 
-print("Model A first KV head, first token:")
-print(cache_A.layers[0].keys[0, 0, 0, :])
+    print("Model A first KV head, first token:")
+    print(cache_A.layers[0].keys[0, 0, 0, :])
 
-print("\nModel B first KV head, first token:")
-print(cache_B.layers[0].keys[0, 0, 0, :])
+    print("\nModel B first KV head, first token:")
+    print(cache_B.layers[0].keys[0, 0, 0, :])
 

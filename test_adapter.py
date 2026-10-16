@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from inspect_different_models import models_and_caches
 
-config_A, config_B, cache_A, cache_B = models_and_caches()
+config_A, config_B, model_A, model_B, cache_A, cache_B = models_and_caches()
 
 head_dim_A = config_A.hidden_size // config_A.num_attention_heads
 head_dim_B = config_B.hidden_size // config_B.num_attention_heads
@@ -72,6 +72,31 @@ layer_map = create_layer_map(
 )
 print(layer_map)
 
+def evaluate(cache_A, cache_B, training=False):
+    total_K_loss = 0
+    total_V_loss = 0
+
+    context = torch.enable_grad() if training else torch.no_grad()
+
+    with context:
+        for b_layer, a_layer in enumerate(layer_map):
+            K_A = cache_A.layers[a_layer].keys
+            V_A = cache_A.layers[a_layer].values
+
+            pred_K = adapt_heads(K_A, K_adapter)
+            pred_V = adapt_heads(V_A, V_adapter)
+
+            target_K = cache_B.layers[b_layer].keys
+            target_V = cache_B.layers[b_layer].values
+
+            total_K_loss += loss_fn(pred_K, target_K)
+            total_V_loss += loss_fn(pred_V, target_V)
+
+        if training:
+            return total_K_loss, total_V_loss
+
+    return total_K_loss.item(), total_V_loss.item()
+
 # main
 adapted_K = []
 adapted_V = []
@@ -111,29 +136,24 @@ optimizer = torch.optim.Adam(
 
 loss_fn = nn.MSELoss()
 
+# Before training results
+before_training_K_loss, before_training_V_loss = evaluate(cache_A, cache_B)
+before_total_loss = before_training_K_loss + before_training_V_loss
+
+print("\n--- Before Training Results ---")
+print(f"K loss: {before_training_K_loss:.4f}")
+print(f"V loss: {before_training_V_loss:.4f}")
+print(f"Total test loss: {before_total_loss:.4f}")
+print("-------------")
+
+
 # Number of training iterations
 for epoch in range(100):
 
     # clear the previous batch's gradients at the start of each epoch
     optimizer.zero_grad()
 
-    total_K_loss = 0
-    total_V_loss = 0
-
-    for b_layer, a_layer in enumerate(layer_map):
-
-        K_A = cache_A.layers[a_layer].keys
-        V_A = cache_A.layers[a_layer].values
-
-        predicted_K = adapt_heads(K_A, K_adapter)
-        predicted_V = adapt_heads(V_A, V_adapter)
-
-        target_K = cache_B.layers[b_layer].keys
-        target_V = cache_B.layers[b_layer].values
-
-        total_K_loss += loss_fn(predicted_K, target_K)
-        total_V_loss += loss_fn(predicted_V, target_V)
-
+    total_K_loss, total_V_loss = evaluate(cache_A, cache_B, training=True)
     total_loss = total_K_loss + total_V_loss
 
     """ Calculate gradients for the adapter's parameters (PyTorch saves the gradients automatically inside each parameter.)
@@ -144,5 +164,6 @@ for epoch in range(100):
     if (epoch + 1) % 10 == 0:
         print(
             f"Epoch {epoch + 1}: "
-            f"Loss = {total_loss.item():.4f}"
+            f"Loss = {total_loss:.4f}"
         )
+

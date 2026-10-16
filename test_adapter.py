@@ -72,10 +72,10 @@ layer_map = create_layer_map(
 )
 print(layer_map)
 
-def evaluate(cache_A, cache_B, training=False):
+def evaluate(cache_A, cache_B, layer_map, K_adapter, V_adapter,  training=False):
     total_K_loss = 0
     total_V_loss = 0
-
+    loss_fn = nn.MSELoss()
     context = torch.enable_grad() if training else torch.no_grad()
 
     with context:
@@ -134,10 +134,30 @@ optimizer = torch.optim.Adam(
     lr=0.001
 )
 
-loss_fn = nn.MSELoss()
+
+# Test section ( same models, but using a different input sequence )
+test_input_ids = torch.tensor([
+    [41, 42, 43, 44, 45],
+    [46, 47, 48, 49, 50],
+    [51, 52, 53, 54, 55],
+    [56, 57, 58, 59, 60],
+])
+
+with torch.no_grad():
+    cache_A_test = model_A(
+        input_ids=test_input_ids,
+        use_cache=True,
+        return_dict=True,
+    ).past_key_values
+
+    cache_B_test = model_B(
+        input_ids=test_input_ids,
+        use_cache=True,
+        return_dict=True,
+    ).past_key_values
 
 # Before training results
-before_training_K_loss, before_training_V_loss = evaluate(cache_A, cache_B)
+before_training_K_loss, before_training_V_loss = evaluate(cache_A_test, cache_B_test, layer_map, K_adapter, V_adapter)
 before_total_loss = before_training_K_loss + before_training_V_loss
 
 print("\n--- Before Training Results ---")
@@ -147,13 +167,13 @@ print(f"Total test loss: {before_total_loss:.4f}")
 print("-------------")
 
 
-# Number of training iterations
+# Training loop
 for epoch in range(100):
 
     # clear the previous batch's gradients at the start of each epoch
     optimizer.zero_grad()
 
-    total_K_loss, total_V_loss = evaluate(cache_A, cache_B, training=True)
+    total_K_loss, total_V_loss = evaluate(cache_A, cache_B, layer_map, K_adapter, V_adapter, training=True)
     total_loss = total_K_loss + total_V_loss
 
     """ Calculate gradients for the adapter's parameters (PyTorch saves the gradients automatically inside each parameter.)
@@ -167,3 +187,14 @@ for epoch in range(100):
             f"Loss = {total_loss:.4f}"
         )
 
+
+# Test section after training
+test_K_loss, test_V_loss = evaluate(cache_A_test, cache_B_test, layer_map, K_adapter, V_adapter)
+test_total_loss = test_K_loss + test_V_loss
+
+
+print("\n--- Test Results after training ---")
+print("Test input:", test_input_ids.tolist())
+print(f"Test K loss: {test_K_loss:.4f}")
+print(f"Test V loss: {test_V_loss:.4f}")
+print(f"Total test loss: {test_total_loss:.4f}")

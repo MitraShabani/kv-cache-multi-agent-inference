@@ -3,6 +3,9 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 
 def models_and_caches():
+    # Set the random seed for reproducibility (42, 123, 456)
+    torch.manual_seed(456)
+
     config_A = LlamaConfig(
         hidden_size=128,
         intermediate_size=256,

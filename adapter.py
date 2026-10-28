@@ -1,11 +1,12 @@
 
+import torch
 import torch.nn as nn
 from inspect_pretrained_models import models_info
 
-results = models_info()
+(config, model, cache, layers, get_key, get_value) = zip(*models_info())
 
-source_config = results[1][0] # GPT-Neo configuration
-target_config = results[0][0] # Qwen configuration
+source_config = config[1] # GPT-Neo configuration
+target_config = config[0] # Qwen configuration
 
 print("Source:", source_config.model_type)
 print("Target:", target_config.model_type)
@@ -42,4 +43,62 @@ for source_layer, target_layer in enumerate(layer_map):
 
 print()
 
+# head adaptation in each layer
+class KVLayerAdapter(nn.Module):
+    def __init__(self, source_heads, target_heads):
+        super().__init__()
+
+        self.key_proj = nn.Linear(source_heads, target_heads)
+        self.value_proj = nn.Linear(source_heads, target_heads)
+
+    def forward(self, key, value):
+        # Input: [batch, source_heads, sequence, head_dim]
+
+        key = key.permute(0, 2, 3, 1)       # [B, S, D, H_source]
+        value = value.permute(0, 2, 3, 1)
+
+        key = self.key_proj(key)            # [B, S, D, H_target]
+        value = self.value_proj(value)
+
+        key = key.permute(0, 3, 1, 2)       # [B, H_target, S, D]
+        value = value.permute(0, 3, 1, 2)
+
+        return key, value
+
+
+source_heads = (dimensions["source_heads"])
+target_heads = (dimensions["target_heads"])
+
+adapter = KVLayerAdapter(source_heads, target_heads)
+
+adapted_K = []
+adapted_V = []
+
+for a_layer, b_layer in enumerate(layer_map):
+
+    K_A = get_key[1](layers[1][a_layer])
+    V_A = get_value[1](layers[1][a_layer])
+
+    K_B, V_B = adapter(K_A, V_A)
+
+    adapted_K.append(K_B)
+    adapted_V.append(V_B)
+
+    print(
+        f"Source layer {a_layer} -> Target layer {layer_map[a_layer]}: "
+        f"K {tuple(K_B.shape)}, V {tuple(V_B.shape)}"
+    )
+
+print("Adapted layers:", len(adapted_K))
+print("Expected source layers:", dimensions["source_layers"])
+print("Expected target KV heads:", dimensions["target_heads"])
+
+assert len(adapted_K) == len(layer_map)
+assert len(adapted_V) == len(layer_map)
+
+assert all(
+    K.shape[1] == dimensions["target_heads"]
+    and V.shape[1] == dimensions["target_heads"]
+    for K, V in zip(adapted_K, adapted_V)
+)
 

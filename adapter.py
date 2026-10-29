@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from inspect_pretrained_models import models_info
+import math
 
 (config, model, cache, layers, get_key, get_value) = zip(*models_info())
 
@@ -29,17 +30,21 @@ def get_model_dimensions(source_config, target_config):
 
 dimensions = get_model_dimensions(source_config, target_config)
 
-# Proportional layer mapping from source to target
+# Proportional layer mapping
+# create one output for each target layer so: target to source mapping
+""" Make layer_map represent the continuous source-layer position
+    for every target layer.We won't round it to an integer, because
+    interpolation needs the two neighboring source layers"""
 
 layer_map = [
-    round(gpt_layer * (dimensions["target_layers"] - 1) / (dimensions["source_layers"] - 1))  # linear interpolation
-    for gpt_layer in range(dimensions["source_layers"])
+    target_layer * (dimensions["source_layers"] - 1) / (dimensions["target_layers"] - 1)  # Linear interpolation of layer positions
+    for target_layer in range(dimensions["target_layers"])
 ]
 
-print("Source layer -> Target layer")
-for source_layer, target_layer in enumerate(layer_map):
+print("Target layer -> Source layer")
+for target_layer, source_layer in enumerate(layer_map):
 
-    print(f"{source_layer:2} -> {target_layer:2}")
+    print(f"{target_layer:2} -> {source_layer:2}")
 
 print()
 
@@ -74,24 +79,46 @@ adapter = KVLayerAdapter(source_heads, target_heads)
 adapted_K = []
 adapted_V = []
 
-for a_layer, b_layer in enumerate(layer_map):
+for target_layer, position in enumerate(layer_map):
+    """ One adapted KV representation for every target layer.
+        - find the corresponding Source layer position
+        - interpolate the source tensors
+        - adapt the tensors for target """
 
-    K_A = get_key[1](layers[1][a_layer])
-    V_A = get_value[1](layers[1][a_layer])
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    alpha = position - lower
 
-    K_B, V_B = adapter(K_A, V_A)
+    K_lower = get_key[1](layers[1][lower])
+    V_lower = get_value[1](layers[1][lower])
 
-    adapted_K.append(K_B)
-    adapted_V.append(V_B)
+    if lower == upper:
+        K_source = K_lower
+        V_source = V_lower
+    else:
+        K_upper = get_key[1](layers[1][upper])
+        V_upper = get_value[1](layers[1][upper])
+
+        K_source = (1 - alpha) * K_lower + alpha * K_upper
+        V_source = (1 - alpha) * V_lower + alpha * V_upper
+
+    K_target, V_target = adapter(K_source, V_source)
+
+    adapted_K.append(K_target)
+    adapted_V.append(V_target)
 
     print(
-        f"Source layer {a_layer} -> Target layer {layer_map[a_layer]}: "
-        f"K {tuple(K_B.shape)}, V {tuple(V_B.shape)}"
+        f"Qwen layer {target_layer} <- GPT-Neo position {position:.2f}: "
+        f"K {K_target.shape}, V {V_target.shape}"
     )
 
-print("Adapted layers:", len(adapted_K))
-print("Expected source layers:", dimensions["source_layers"])
-print("Expected target KV heads:", dimensions["target_heads"])
+print("\nValidation")
+print("Expected target layers:", dimensions["target_layers"])
+print("Adapted key tensors:", len(adapted_K))
+print("Adapted value tensors:", len(adapted_V))
+print()
+print("First key shape:", adapted_K[0].shape)
+print("Last key shape:", adapted_K[-1].shape)
 
 assert len(adapted_K) == len(layer_map)
 assert len(adapted_V) == len(layer_map)

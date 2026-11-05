@@ -61,6 +61,19 @@ def extract_cache_layers(past_key_values):
 
     return layers
 
+import os
+
+def save_cache(model_id, layers):
+    safe_name = model_id.replace("/", "_")
+
+    save_dir = "/content/drive/MyDrive/KVBridge/caches"
+    os.makedirs(save_dir, exist_ok=True)
+
+    path = os.path.join(save_dir, f"{safe_name}_cache.pt")
+
+    torch.save(layers, path)
+
+    print(f"Cache saved to: {path}")
 
 def inspect_models(
     load_weights=False,
@@ -140,6 +153,7 @@ def inspect_models(
             layers = extract_cache_layers(
                 outputs.past_key_values
             )
+            save_cache(model_id, layers)
 
             # Portable CPU cache representation
             cache = layers

@@ -63,6 +63,7 @@ def extract_cache_layers(past_key_values):
 
 import os
 
+
 def save_cache(model_id, layers):
     safe_name = model_id.replace("/", "_")
 
@@ -74,6 +75,39 @@ def save_cache(model_id, layers):
     torch.save(layers, path)
 
     print(f"Cache saved to: {path}")
+
+
+def load_saved_caches(cache_dir):
+    model_caches = {}
+    model_dimensions = {}
+
+    for model_id in MODEL_IDS:
+        safe_name = model_id.replace("/", "_")
+        path = os.path.join(cache_dir, f"{safe_name}_cache.pt")
+
+        layers = torch.load(
+            path,
+            map_location="cpu",
+            weights_only=True,
+        )
+
+        model_caches[model_id] = layers
+
+        key, value = layers[0]
+
+        model_dimensions[model_id] = {
+            "layers": len(layers),
+            "kv_heads": key.shape[1],
+            "head_dim": key.shape[3],
+        }
+
+        print(f"\n{model_id}")
+        print("Layers:", len(layers))
+        print("KV heads:", key.shape[1])
+        print("Head dimension:", key.shape[3])
+
+    return model_caches, model_dimensions
+
 
 def inspect_models(
     load_weights=False,

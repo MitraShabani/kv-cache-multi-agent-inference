@@ -1,34 +1,30 @@
 
 import torch
 import torch.nn as nn
-from inspect_pretrained_models import models_info
+from inspect_task_models import MODEL_IDS,load_saved_caches
 import math
+from transformers.cache_utils import DynamicCache
 
-(config, model, cache, layers, get_key, get_value) = zip(*models_info())
+cache_dir = "./caches"
+model_caches, model_dimensions = load_saved_caches(cache_dir)
 
-source_config = config[1] # GPT-Neo configuration
-target_config = config[0] # Qwen configuration
+source_id, target_id = MODEL_IDS[0], MODEL_IDS[2]
 
-print("Source:", source_config.model_type)
-print("Target:", target_config.model_type)
 
-def get_model_dimensions(source_config, target_config):
+def get_model_dimensions(model_dimensions, source_id, target_id):
+
+    source = model_dimensions[source_id]
+    target = model_dimensions[target_id]
     return {
-        "source_layers": source_config.num_hidden_layers,
-        "target_layers": target_config.num_hidden_layers,
-        "source_heads": source_config.num_key_value_heads
-            if hasattr(source_config, "num_key_value_heads")
-            else source_config.num_attention_heads,
-        "target_heads": target_config.num_key_value_heads
-            if hasattr(target_config, "num_key_value_heads")
-            else target_config.num_attention_heads,
-        "source_head_dim": source_config.hidden_size
-            // source_config.num_attention_heads,
-        "target_head_dim": target_config.hidden_size
-            // target_config.num_attention_heads,
+        "source_layers": source["layers"],
+        "target_layers": target["layers"],
+        "source_heads": source["kv_heads"],
+        "target_heads": target["kv_heads"],
+        "source_head_dim": source["head_dim"],
+        "target_head_dim": target["head_dim"],
     }
 
-dimensions = get_model_dimensions(source_config, target_config)
+dimensions = get_model_dimensions(model_dimensions, source_id, target_id)
 
 # Proportional layer mapping
 # create one output for each target layer so: target to source mapping
@@ -41,7 +37,12 @@ layer_map = [
     for target_layer in range(dimensions["target_layers"])
 ]
 
-print("Target layer -> Source layer")
+print("Source:", source_id)
+print("Target:", target_id)
+print("Dimensions:", dimensions)
+print("Layer map:", layer_map)
+
+print("Target layer <- Source layer")
 for target_layer, source_layer in enumerate(layer_map):
 
     print(f"{target_layer:2} -> {source_layer:2}")
@@ -49,83 +50,114 @@ for target_layer, source_layer in enumerate(layer_map):
 print()
 
 # head adaptation in each layer
+# head-wise projection
 class KVLayerAdapter(nn.Module):
-    def __init__(self, source_heads, target_heads):
+    def __init__(self, source_heads, target_heads, source_head_dim, target_head_dim):
         super().__init__()
 
-        self.key_proj = nn.Linear(source_heads, target_heads)
-        self.value_proj = nn.Linear(source_heads, target_heads)
+        self.key_head_proj = nn.Linear(source_heads, target_heads)
+        self.value_head_proj = nn.Linear(source_heads, target_heads)
+
+        self.key_dim_proj = nn.Linear(source_head_dim, target_head_dim)
+        self.value_dim_proj = nn.Linear(source_head_dim, target_head_dim)
 
     def forward(self, key, value):
         # Input: [batch, source_heads, sequence, head_dim]
 
-        key = key.permute(0, 2, 3, 1)       # [B, S, D, H_source]
+        key = key.permute(0, 2, 3, 1)       # [B, S, D_source, H_source]
         value = value.permute(0, 2, 3, 1)
 
-        key = self.key_proj(key)            # [B, S, D, H_target]
-        value = self.value_proj(value)
+        key = self.key_head_proj(key)            # [B, S, D_source, H_target]
+        value = self.value_head_proj(value)
 
-        key = key.permute(0, 3, 1, 2)       # [B, H_target, S, D]
-        value = value.permute(0, 3, 1, 2)
+        # Put head dimension last for nn.Linear
+        key = key.permute(0, 1, 3, 2)       # [B, S ,H_target, D_source]
+        value = value.permute(0, 1, 3, 2)
+
+        # Adapt the head dimension
+        key = self.key_dim_proj(key)
+        value = self.value_dim_proj(value)
+
+        # Return to cache layout
+        # [B, S, H_target, D_target] -> [B, H_target, S, D_target]
+        key = key.permute(0, 2, 1, 3)
+        value = value.permute(0, 2, 1, 3)
 
         return key, value
 
 
-source_heads = (dimensions["source_heads"])
-target_heads = (dimensions["target_heads"])
+source_heads = dimensions["source_heads"]
+target_heads = dimensions["target_heads"]
+source_head_dim = dimensions["source_head_dim"]
+target_head_dim = dimensions["target_head_dim"]
 
-adapter = KVLayerAdapter(source_heads, target_heads)
+adapter = KVLayerAdapter(source_heads, target_heads, source_head_dim, target_head_dim)
 
-adapted_K = []
-adapted_V = []
+def adapt_cache(source_cache, dimensions, adapter):
+    adapted_cache = []
 
-for target_layer, position in enumerate(layer_map):
+    source_layers = dimensions["source_layers"]
+    target_layers = dimensions["target_layers"]
+
     """ One adapted KV representation for every target layer.
-        - find the corresponding Source layer position
-        - interpolate the source tensors
-        - adapt the tensors for target """
+    - find the corresponding Source layer position
+    - interpolate the source tensors
+    - adapt the tensors for target """
 
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    alpha = position - lower
+    for target_layer in range(target_layers):
+        position = (
+            target_layer * (source_layers - 1) / (target_layers - 1)
+            if target_layers > 1 else 0
+        )
 
-    K_lower = get_key[1](layers[1][lower])
-    V_lower = get_value[1](layers[1][lower])
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        alpha = position - lower
 
-    if lower == upper:
-        K_source = K_lower
-        V_source = V_lower
-    else:
-        K_upper = get_key[1](layers[1][upper])
-        V_upper = get_value[1](layers[1][upper])
+        K_lower, V_lower = source_cache[lower]
 
-        K_source = (1 - alpha) * K_lower + alpha * K_upper
-        V_source = (1 - alpha) * V_lower + alpha * V_upper
+        if lower == upper:
+            K_source, V_source = K_lower, V_lower
+        else:
+            K_upper, V_upper = source_cache[upper]
 
-    K_target, V_target = adapter(K_source, V_source)
+            K_source = (1 - alpha) * K_lower + alpha * K_upper
+            V_source = (1 - alpha) * V_lower + alpha * V_upper
 
-    adapted_K.append(K_target)
-    adapted_V.append(V_target)
+        K_target, V_target = adapter(
+            K_source.float(),
+            V_source.float()
+        )
 
-    print(
-        f"Qwen layer {target_layer} <- GPT-Neo position {position:.2f}: "
-        f"K {K_target.shape}, V {V_target.shape}"
-    )
+        adapted_cache.append((K_target, V_target))
 
+    return adapted_cache
+
+
+adapted_cache = adapt_cache(
+    model_caches[source_id],
+    dimensions,
+    adapter
+)
+
+
+print()
 print("\nValidation")
 print("Expected target layers:", dimensions["target_layers"])
-print("Adapted key tensors:", len(adapted_K))
-print("Adapted value tensors:", len(adapted_V))
+print("Adapted key tensors:", len(adapted_cache))
+print("Adapted value tensors:", len(adapted_cache))
 print()
-print("First key shape:", adapted_K[0].shape)
-print("Last key shape:", adapted_K[-1].shape)
+print("First adapted key shape:", adapted_cache[0][0].shape)
+print("Last adapted key shape:", adapted_cache[-1][0].shape)
+print()
 
-assert len(adapted_K) == len(layer_map)
-assert len(adapted_V) == len(layer_map)
+assert len(adapted_cache) == dimensions["target_layers"]
 
 assert all(
     K.shape[1] == dimensions["target_heads"]
+    and K.shape[3] == dimensions["target_head_dim"]
     and V.shape[1] == dimensions["target_heads"]
-    for K, V in zip(adapted_K, adapted_V)
+    and V.shape[3] == dimensions["target_head_dim"]
+    for K, V in adapted_cache
 )
 

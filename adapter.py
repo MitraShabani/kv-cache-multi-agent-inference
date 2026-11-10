@@ -8,8 +8,6 @@ from transformers.cache_utils import DynamicCache
 cache_dir = "./caches"
 model_caches, model_dimensions = load_saved_caches(cache_dir)
 
-source_id, target_id = MODEL_IDS[0], MODEL_IDS[2]
-
 
 def get_model_dimensions(model_dimensions, source_id, target_id):
 
@@ -24,34 +22,11 @@ def get_model_dimensions(model_dimensions, source_id, target_id):
         "target_head_dim": target["head_dim"],
     }
 
-dimensions = get_model_dimensions(model_dimensions, source_id, target_id)
 
-# Proportional layer mapping
-# create one output for each target layer so: target to source mapping
-""" Make layer_map represent the continuous source-layer position
-    for every target layer.We won't round it to an integer, because
-    interpolation needs the two neighboring source layers"""
-
-layer_map = [
-    target_layer * (dimensions["source_layers"] - 1) / (dimensions["target_layers"] - 1)  # Linear interpolation of layer positions
-    for target_layer in range(dimensions["target_layers"])
-]
-
-print("Source:", source_id)
-print("Target:", target_id)
-print("Dimensions:", dimensions)
-print("Layer map:", layer_map)
-
-print("Target layer <- Source layer")
-for target_layer, source_layer in enumerate(layer_map):
-
-    print(f"{target_layer:2} -> {source_layer:2}")
-
-print()
-
-# head adaptation in each layer
+# head & head dimension adaptation (in each layer)
 # head-wise projection
 class KVLayerAdapter(nn.Module):
+
     def __init__(self, source_heads, target_heads, source_head_dim, target_head_dim):
         super().__init__()
 
@@ -86,33 +61,34 @@ class KVLayerAdapter(nn.Module):
         return key, value
 
 
-source_heads = dimensions["source_heads"]
-target_heads = dimensions["target_heads"]
-source_head_dim = dimensions["source_head_dim"]
-target_head_dim = dimensions["target_head_dim"]
-
-adapter = KVLayerAdapter(source_heads, target_heads, source_head_dim, target_head_dim)
-
 def adapt_cache(source_cache, dimensions, adapter):
-    adapted_cache = []
 
     source_layers = dimensions["source_layers"]
     target_layers = dimensions["target_layers"]
+
+    # Proportional layer mapping
+    # create one output for each target layer so: target to source mapping
+    """ Make layer_map represent the continuous source-layer position
+        for every target layer.We won't round it to an integer, because
+        interpolation needs the two neighboring source layers"""
+
+    layer_map = [
+    target_layer * (source_layers - 1) / (target_layers - 1)
+    if target_layers > 1 else 0
+    for target_layer in range(target_layers)
+]
 
     """ One adapted KV representation for every target layer.
     - find the corresponding Source layer position
     - interpolate the source tensors
     - adapt the tensors for target """
 
-    for target_layer in range(target_layers):
-        position = (
-            target_layer * (source_layers - 1) / (target_layers - 1)
-            if target_layers > 1 else 0
-        )
+    adapted_cache = []
+    for source_layer_position in layer_map:
 
-        lower = math.floor(position)
-        upper = math.ceil(position)
-        alpha = position - lower
+        lower = math.floor(source_layer_position)
+        upper = math.ceil(source_layer_position)
+        alpha = source_layer_position - lower
 
         K_lower, V_lower = source_cache[lower]
 
@@ -133,31 +109,46 @@ def adapt_cache(source_cache, dimensions, adapter):
 
     return adapted_cache
 
+# Test for six pairs (source → target combinations)
+for source_id in MODEL_IDS:
+    for target_id in MODEL_IDS:
 
-adapted_cache = adapt_cache(
-    model_caches[source_id],
-    dimensions,
-    adapter
-)
+        if source_id == target_id:
+            continue
+
+        dimensions = get_model_dimensions(
+            model_dimensions,
+            source_id,
+            target_id
+        )
+
+        source_heads = dimensions["source_heads"]
+        target_heads = dimensions["target_heads"]
+        source_head_dim = dimensions["source_head_dim"]
+        target_head_dim = dimensions["target_head_dim"]
+
+        adapter = KVLayerAdapter(source_heads, target_heads, source_head_dim, target_head_dim)
+
+        adapted_cache = adapt_cache(
+            model_caches[source_id],
+            dimensions,
+            adapter
+        )
+
+        assert len(adapted_cache) == dimensions["target_layers"]
+
+        assert all(
+            K.shape[1] == dimensions["target_heads"]
+            and K.shape[3] == dimensions["target_head_dim"]
+            and V.shape[1] == dimensions["target_heads"]
+            and V.shape[3] == dimensions["target_head_dim"]
+            for K, V in adapted_cache
+        )
+
+        print(f"\n{source_id} -> {target_id}")
+        print("Adapted layers:", len(adapted_cache))
+        print("First key shape:", adapted_cache[0][0].shape)
+        print("First value shape:", adapted_cache[0][1].shape)
 
 
-print()
-print("\nValidation")
-print("Expected target layers:", dimensions["target_layers"])
-print("Adapted key tensors:", len(adapted_cache))
-print("Adapted value tensors:", len(adapted_cache))
-print()
-print("First adapted key shape:", adapted_cache[0][0].shape)
-print("Last adapted key shape:", adapted_cache[-1][0].shape)
-print()
-
-assert len(adapted_cache) == dimensions["target_layers"]
-
-assert all(
-    K.shape[1] == dimensions["target_heads"]
-    and K.shape[3] == dimensions["target_head_dim"]
-    and V.shape[1] == dimensions["target_heads"]
-    and V.shape[3] == dimensions["target_head_dim"]
-    for K, V in adapted_cache
-)
 
